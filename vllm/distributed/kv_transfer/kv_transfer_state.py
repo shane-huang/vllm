@@ -7,13 +7,16 @@ from vllm.distributed.kv_transfer.kv_connector.factory import (
     KVConnectorFactory)
 from vllm.distributed.kv_transfer.kv_connector.v1 import (KVConnectorBase_V1,
                                                           KVConnectorRole)
-from vllm.distributed.parallel_state import get_world_group
+# from vllm.distributed.parallel_state import get_world_group
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
 _KV_CONNECTOR_AGENT: Optional[KVConnectorBaseType] = None
 
+def get_world_group_lazy():
+    from vllm.distributed.parallel_state import get_world_group
+    return get_world_group()
 
 def get_kv_transfer_group() -> KVConnectorBaseType:
     assert _KV_CONNECTOR_AGENT is not None, (
@@ -64,7 +67,7 @@ def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
                 config=vllm_config, role=KVConnectorRole.WORKER)
         else:
             _KV_CONNECTOR_AGENT = KVConnectorFactory.create_connector_v0(
-                rank=get_world_group().rank,
-                local_rank=get_world_group().local_rank,
+                rank=get_world_group_lazy().rank,
+                local_rank=get_world_group_lazy().local_rank,
                 config=vllm_config,
             )
