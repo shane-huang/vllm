@@ -23,6 +23,7 @@ from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
 from vllm.worker.xpu_model_runner import XPUModelRunner, XPUModelRunnerBase
 from vllm.worker.xpu_pooling_model_runner import XPUPoolingModelRunner
 from vllm.worker.xpu_enc_dec_model_runner import XPUEncoderDecoderModelRunner
+from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 
 logger = init_logger(__name__)
 
@@ -46,6 +47,7 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
     ) -> None:
         WorkerBase.__init__(self, vllm_config=vllm_config)
         device_config = self.device_config
+        self.vllm_config = vllm_config
         parallel_config = self.parallel_config
         assert device_config.device_type == "xpu"
         assert current_platform.is_xpu()
@@ -264,3 +266,5 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
             # torch-ccl xpu need a collective API warm up
             # before calling send/recv API
             get_pp_group().all_gather(torch.zeros(1).xpu())
+
+        ensure_kv_transfer_initialized(self.vllm_config)
