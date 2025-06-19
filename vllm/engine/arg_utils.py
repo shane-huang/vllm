@@ -210,6 +210,8 @@ class EngineArgs:
     enable_reasoning: Optional[bool] = None
     reasoning_parser: Optional[str] = None
     use_tqdm_on_load: bool = True
+    low_bit_model_path: Optional[str] = None
+    low_bit_save_path: Optional[str] = None
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -992,6 +994,18 @@ class EngineArgs:
             "API format. Required for ``--enable-reasoning``.")
 
         parser.add_argument(
+            "--low-bit-model-path",
+            type=nullable_str,
+            default=None,
+            help="Path for Low-bit loader")
+
+        parser.add_argument(
+            "--low-bit-save-path",
+            type=nullable_str,
+            default=None,
+            help="Path for Low-bit saver")
+        
+        parser.add_argument(
             "--disable-cascade-attn",
             action="store_true",
             default=False,
@@ -1061,10 +1075,16 @@ class EngineArgs:
             override_generation_config=self.override_generation_config,
             enable_sleep_mode=self.enable_sleep_mode,
             model_impl=self.model_impl,
+            low_bit_model_path=self.low_bit_model_path,
+            low_bit_save_path=self.low_bit_save_path,
         )
 
     def create_load_config(self) -> LoadConfig:
 
+        use_low_bit_loader = False
+
+        if self.low_bit_model_path is not None:
+            use_low_bit_loader = True
         if(self.qlora_adapter_name_or_path is not None) and \
             self.quantization != "bitsandbytes":
             raise ValueError(
@@ -1079,7 +1099,9 @@ class EngineArgs:
             model_loader_extra_config=self.model_loader_extra_config,
             ignore_patterns=self.ignore_patterns,
             use_tqdm_on_load=self.use_tqdm_on_load,
+            use_low_bit_loader=use_low_bit_loader,
         )
+
 
     def create_speculative_config(
         self,
@@ -1504,12 +1526,13 @@ class EngineArgs:
             _raise_or_fallback(feature_name=name, recommend_to_remove=True)
             return False
 
-        # Platforms must decide if they can support v1 for this model
-        if not current_platform.supports_v1(model_config=model_config):
-            _raise_or_fallback(
-                feature_name=f"device type={current_platform.device_type}",
-                recommend_to_remove=False)
-            return False
+        # # No support for device type other than CUDA, AMD (experiemntal) or
+        # # TPU (experimental) so far.
+        # if not (current_platform.is_cuda_alike() or current_platform.is_tpu()):
+        #     _raise_or_fallback(
+        #         feature_name=f"device type={current_platform.device_type}",
+        #         recommend_to_remove=False)
+        #     return False
         #############################################################
         # Experimental Features - allow users to opt in.
 

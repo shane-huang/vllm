@@ -302,23 +302,33 @@ class Qwen2_5_VisionAttention(nn.Module):
                                       "(b s) ... -> b s ...",
                                       b=batch_size)
         elif self.attn_backend == _Backend.TORCH_SDPA:
-            # Execute attention entry by entry for speed & less VRAM.
-            outputs = []
-            for i in range(1, len(cu_seqlens)):
-                start_idx = cu_seqlens[i - 1]
-                end_idx = cu_seqlens[i]
-                q_i = q[:, start_idx:end_idx]
-                k_i = k[:, start_idx:end_idx]
-                v_i = v[:, start_idx:end_idx]
-                q_i, k_i, v_i = (rearrange(x, "b s h d -> b h s d")
-                                 for x in [q_i, k_i, v_i])
-                output_i = F.scaled_dot_product_attention(q_i,
-                                                          k_i,
-                                                          v_i,
-                                                          dropout_p=0.0)
-                output_i = rearrange(output_i, "b h s d -> b s h d ")
-                outputs.append(output_i)
-            context_layer = torch.cat(outputs, dim=1)
+            # TODO(xiangyu): Maybe add attn_backend xpu?
+            q, k, v = (rearrange(x, "b s ... -> (b s) ...") for x in [q, k, v])
+            from vllm._ipex_ops import ipex_ops
+            output = torch.empty(
+                        (q.shape[0], q.shape[1], q.shape[2]),
+                        dtype=q.dtype,
+                        device=q.device)
+            import math
+            head_dim = q.shape[-1]
+            scale = 1 / math.sqrt(head_dim)
+            ipex_ops.varlen_attention(q, k, v, output,
+                                    cu_seqlens,
+                                    cu_seqlens,
+                                    max_seqlen,
+                                    max_seqlen,
+                                    pdropout=0,
+                                    softmax_scale=scale,
+                                    zero_tensors=False,
+                                    is_causal=False,
+                                    return_softmax=False,
+                                    gen_=None,
+                                    logits_soft_cap=0
+                                    )
+
+            context_layer = rearrange(output,
+                                      "(b s) ... -> b s ...",
+                                      b=batch_size)
         elif self.attn_backend == _Backend.XFORMERS:
             from xformers import ops as xops
             from xformers.ops.fmha.attn_bias import BlockDiagonalMask
@@ -613,10 +623,11 @@ class Qwen2_5_VisionTransformer(nn.Module):
         cu_seqlens: torch.Tensor,
     ) -> tuple[Optional[int], Optional[list[int]]]:
         max_seqlen, seqlens = None, None
-        if self.attn_backend == _Backend.FLASH_ATTN:
-            max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
-        elif self.attn_backend == _Backend.XFORMERS:
-            seqlens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        # if self.attn_backend == _Backend.FLASH_ATTN:
+        #     max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        # elif self.attn_backend == _Backend.XFORMERS:
+        #     seqlens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
         return max_seqlen, seqlens
 
     def forward(
@@ -1082,7 +1093,7 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
                     image_input=image_input,
                     video_input=video_input)
                 input_ids = None
-
+ 
         hidden_states = self.language_model.model(
             input_ids=input_ids,
             positions=positions,

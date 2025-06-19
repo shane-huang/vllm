@@ -60,7 +60,7 @@ class MooncakeStoreConnector(KVConnectorBase):
 
     def close(self) -> None:
         """Close the buffer and release resources.
-        This method is responsible for cleaning up resources related to the 
+        This method is responsible for cleaning up resources related to the
         connector when it is no longer needed.
         Raises:
             NotImplementedError: This method must be implemented in subclasses.

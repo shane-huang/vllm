@@ -59,3 +59,30 @@ class RayDistributedExecutor(RayDistributedExecutorV0, Executor):
         # When PP is used, we return a FutureWrapper immediately so that
         # the scheduler can yield to the next batch.
         return FutureWrapper(refs[0])
+
+class XPURayDistributedExecutor(RayDistributedExecutorV0, Executor):
+    """XPU Ray distributed executor without Compiled Graphs."""
+
+    def __init__(self, *args, **kwargs):
+        import os
+        lowbit = os.getenv("IPEX_LLM_LOWBIT", None)
+        if lowbit is not None:
+            from ipex_llm.vllm.xpu.model_convert import _ipex_llm_convert
+            _ipex_llm_convert(lowbit)
+        super().__init__(*args, **kwargs)
+
+
+    def execute_model(
+        self,
+        scheduler_output,
+    ) -> Union[ModelRunnerOutput, Future[ModelRunnerOutput]]:
+        output = self.collective_rpc("execute_model",
+                                     args=(scheduler_output, ))
+        return output[0]
+
+    @property
+    def max_concurrent_batches(self) -> int:
+        """Ray distributed executor supports pipeline parallelism,
+        meaning that it allows PP size batches to be executed concurrently.
+        """
+        return self.parallel_config.pipeline_parallel_size
