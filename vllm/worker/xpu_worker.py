@@ -2,9 +2,10 @@
 """A XPU worker class."""
 import gc
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Type
 
 import intel_extension_for_pytorch  # noqa: F401
+# TODO: handle case for oneccl_bindings for dual cards
 import oneccl_bindings_for_pytorch  # noqa: F401
 import torch
 import torch.distributed
@@ -19,16 +20,18 @@ from vllm.platforms import current_platform
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.worker import Worker
 from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
-from vllm.worker.xpu_model_runner import XPUModelRunner
+from vllm.worker.xpu_model_runner import XPUModelRunner, XPUModelRunnerBase
+from vllm.worker.xpu_pooling_model_runner import XPUPoolingModelRunner
+from vllm.worker.xpu_enc_dec_model_runner import XPUEncoderDecoderModelRunner
 
 logger = init_logger(__name__)
 
 
 class XPUWorker(LoRANotSupportedWorkerBase, Worker):
     """A worker class that executes (a partition of) the model on a GPU.
-    
-    Each worker is associated with a single XPU device. The worker is 
-    responsible for maintaining the KV cache and executing the model on the 
+
+    Each worker is associated with a single XPU device. The worker is
+    responsible for maintaining the KV cache and executing the model on the
     XPU. In case of distributed inference, each worker is assigned a partition
     of the model.
     """
@@ -56,8 +59,14 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
         if parallel_config and is_driver_worker:
             assert rank % parallel_config.tensor_parallel_size == 0, \
                    "Driver worker should be rank 0 of tensor parallel group."
+        ModelRunnerClass: Type[XPUModelRunnerBase] = XPUModelRunner
+        model_config = self.model_config
+        if model_config.task == "embed" or model_config.task == "score":
+            ModelRunnerClass = XPUPoolingModelRunner
+        elif model_config.is_encoder_decoder:
+            ModelRunnerClass = XPUEncoderDecoderModelRunner
 
-        self.model_runner = XPUModelRunner(  # type: ignore
+        self.model_runner = ModelRunnerClass(  # type: ignore
             vllm_config=vllm_config,
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
@@ -65,7 +74,7 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
         self.cache_engine: List[CacheEngine]
-        self.gpu_cache: Optional[List[List[torch.Tensor]]]
+        self.gpu_cache: Optional[List[List[torch.Tensor]]] = None
 
     def init_device(self) -> None:
         if self.device_config.device.type == "xpu" and current_platform.is_xpu(
@@ -99,16 +108,74 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
         """
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
+        flag = int(os.getenv("IPEX_LLM_FIND_MAX_LENGTH", -1))
+        if flag != -1:
+            assert flag > 0
+            torch.xpu.empty_cache()
+            before_memory = torch.xpu.memory_reserved()
+            max_num_batched_tokens = flag
+            max_num_seqs = 1
+            support_input = []
+            support_kv_cache = []
+            while True:
+                print(f"Profiling with max_num_batched_tokens {max_num_batched_tokens}...")
+                self.model_runner.profile_run(max_num_batched_tokens, max_num_seqs)
+                torch.xpu.synchronize()
+                used_memory = torch.xpu.memory_reserved()
+                total_gpu_memory = torch.xpu.get_device_properties(
+                    self.local_rank).total_memory
+                free_gpu_memory = total_gpu_memory - used_memory
+                peak_memory = self.init_gpu_memory - free_gpu_memory
+                assert peak_memory > 0
+                cache_block_size = self.get_cache_block_size_bytes()
+                num_gpu_blocks = int(
+                    (total_gpu_memory * self.cache_config.gpu_memory_utilization -
+                    peak_memory) // cache_block_size)
+                num_cpu_blocks = int(self.cache_config.swap_space_bytes //
+                                    cache_block_size)
+                num_gpu_blocks = max(num_gpu_blocks, 0)
+                num_cpu_blocks = max(num_cpu_blocks, 0)
+                gc.collect()
+                torch.xpu.empty_cache()
+                # Begin to handle data...
+                if num_gpu_blocks == 0:
+                    break
+                kv_cache_support_length = num_gpu_blocks * self.cache_config.block_size
+                # Too long input...
+                if max_num_batched_tokens > kv_cache_support_length:
+                    break
+                support_input.append(max_num_batched_tokens)
+                support_kv_cache.append(kv_cache_support_length)
+                max_num_batched_tokens += 250
+
+            print(f"Recommended max input length: {support_input[len(support_input) - 1]}")
+            print(f"{'input length':<15} {'kv cache length':<15}")
+            print("-" * 30)
+
+            for inp, kv in zip(support_input, support_kv_cache):
+                print(f"{inp:<15} {kv:<15}")
         torch.xpu.empty_cache()
+        before_memory = torch.xpu.memory_reserved()
 
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
-        self.model_runner.profile_run()
+        self_max_num_batched_tokens = os.getenv("IPEX_LLM_SELF_MAX_NUM_BATCHED_TOKENS", None)
+        if self_max_num_batched_tokens is not None:
+            # If this get set, then profile using max input length
+            max_num_batched_tokens = int(self_max_num_batched_tokens)
+            self_max_num_seqs = os.getenv("IPEX_LLM_SELF_MAX_NUM_SEQS", None)
+            if self_max_num_seqs is not None:
+                max_num_seqs = int(self_max_num_seqs)
+            else:
+                max_num_seqs = 1
+            self.model_runner.profile_run(max_num_batched_tokens, max_num_seqs)
+        else:
+            self.model_runner.profile_run()
 
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
         torch.xpu.synchronize()
-        used_memory = torch.xpu.memory_allocated()
+        used_memory = torch.xpu.memory_reserved()
         total_gpu_memory = torch.xpu.get_device_properties(
             self.local_rank).total_memory
         free_gpu_memory = total_gpu_memory - used_memory
@@ -132,6 +199,20 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
         num_cpu_blocks = max(num_cpu_blocks, 0)
         gc.collect()
         torch.xpu.empty_cache()
+        flag = os.getenv("IPEX_LLM_MAX_INPUT_LENGTH_DETAIL", None)
+        if flag is not None:
+            in_len = self.scheduler_config.max_num_batched_tokens / 1024
+            logger.info(f"model first init memory {before_memory/(1024**3)} GB")
+            logger.info(f"one card total_gpu_memory = {total_gpu_memory/(1024**3)} GB")
+            logger.info(f"after first_token running, peak_memory {peak_memory/(1024**3)} GB")
+            add_memory = peak_memory-before_memory
+            total_add_memory = total_gpu_memory*self.cache_config.gpu_memory_utilization-before_memory
+            max_input = total_add_memory / (1024/self.cache_config.block_size*cache_block_size + add_memory/in_len)
+            logger.info(f"total_add_memory {total_add_memory/(1024**3)} GB")
+            logger.info(f"input max-model-len(or max-num-batched-tokens) {in_len} K")
+            logger.info(f"Theoretical max input length A: {max_input} K")
+            logger.info(f"Actually support max input length on this num_gpu_blocks B:{num_gpu_blocks*self.cache_config.block_size/1024} K")
+            logger.info(f"We need to increase A and decrease B (B>A) so that they reach a close value.")
         return num_gpu_blocks, num_cpu_blocks
 
     def _warm_up_model(self) -> None:
@@ -177,9 +258,9 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
             parallel_config.tensor_parallel_size,
             parallel_config.pipeline_parallel_size)
         # global all_reduce needed for overall oneccl warm up
-        torch.distributed.all_reduce(torch.zeros(1).xpu())
-
+        # torch.distributed.all_reduce(torch.zeros(1).xpu())
+        from vllm.distributed.parallel_state import get_pp_group
         if parallel_config.pipeline_parallel_size > 1:
-            # Add pp group init to avoid
-            # p2p communication as the first call
-            get_pp_group().all_reduce(torch.zeros(1).xpu())
+            # torch-ccl xpu need a collective API warm up
+            # before calling send/recv API
+            get_pp_group().all_gather(torch.zeros(1).xpu())

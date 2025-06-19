@@ -149,6 +149,8 @@ class Resampler2_5(BaseResampler):
         self.max_size = max_size
         self._set_2d_pos_cache(self.max_size)
 
+        #self.apply(self._init_weights)
+
     def _set_2d_pos_cache(self,
                           max_size: Tuple[int, int],
                           device: torch.types.Device = "cpu") -> None:
@@ -1236,7 +1238,8 @@ class MiniCPMV2_5(MiniCPMVBaseModel, SupportsLoRA):
         return self.resampler(vision_embedding, tgt_sizes)
 
 
-class MiniCPMV2_6(MiniCPMVBaseModel, SupportsLoRA):
+class MiniCPMV2_6(MiniCPMVBaseModel):
+
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -1319,9 +1322,9 @@ class MiniCPMV2_6(MiniCPMVBaseModel, SupportsLoRA):
             patch_attn_mask[i, :num_patches_item] = True
 
         vision_embedding = self.vpm(
-            all_pixel_values,
+            all_pixel_values.type(dtype).to(device),
             patch_attention_mask=patch_attn_mask.unsqueeze(1),
-            tgt_sizes=tgt_sizes,
+            tgt_sizes=tgt_sizes.to(device),
         )
 
         return self.resampler(vision_embedding, tgt_sizes)
@@ -1363,7 +1366,7 @@ class MiniCPMV(MiniCPMVBaseModel, SupportsMultiModal, SupportsLoRA):
 
         # quant_config references base class members,
         # so update values before init is called
-        cls.packed_modules_mapping.update(instance_cls.packed_modules_mapping)
-        cls.embedding_modules.update(instance_cls.embedding_modules)
-        cls.embedding_padding_modules += instance_cls.embedding_padding_modules
+        # cls.packed_modules_mapping.update(instance_cls.packed_modules_mapping)
+        # cls.embedding_modules.update(instance_cls.embedding_modules)
+        # cls.embedding_padding_modules += instance_cls.embedding_padding_modules
         return instance_cls(vllm_config=vllm_config, prefix=prefix)

@@ -111,8 +111,11 @@ class EVA2CLIPAttention(nn.Module):
             prefix=f"{prefix}.dense",
         )
 
-        self.attn = MultiHeadAttention(self.num_heads_per_rank, self.head_dim,
-                                       self.scale)
+        # self.attn = MultiHeadAttention(self.num_heads_per_rank, self.head_dim,
+        #                                self.scale)
+        from vllm.model_executor.models.siglip import SelfAttention
+        self.attn = SelfAttention(self.num_heads_per_rank, self.head_dim,
+                                self.scale)
         self.output_dropout = torch.nn.Dropout(config.dropout_prob)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -332,7 +335,9 @@ class EVA2CLIPModel(nn.Module):
         x = self.conv(x)
 
         x = x.flatten(2).transpose(1, 2)
+        shape = x.shape
         x = self.linear_proj(x)
+        x = x.reshape(shape)
         boi = self.boi.expand(x.shape[0], -1, -1)
         eoi = self.eoi.expand(x.shape[0], -1, -1)
         x = torch.cat((boi, x, eoi), dim=1)

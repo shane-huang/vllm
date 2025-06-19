@@ -144,8 +144,10 @@ class Idefics2VisionAttention(nn.Module):
         )
         self.tp_size = get_tensor_model_parallel_world_size()
         self.num_heads_per_partition = divide(self.num_heads, self.tp_size)
-        self.attn = MultiHeadAttention(self.num_heads_per_partition,
-                                       self.head_dim, self.scale)
+        # self.attn = MultiHeadAttention(self.num_heads_per_partition,
+        #                                self.head_dim, self.scale)
+        from vllm.model_executor.models.siglip import SelfAttention
+        self.attn = SelfAttention(self.num_heads_per_partition, self.head_dim, self.scale)
 
     def forward(
         self,

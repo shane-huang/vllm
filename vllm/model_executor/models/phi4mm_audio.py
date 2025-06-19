@@ -230,6 +230,7 @@ class ConformerEncoderLayer(nn.Module):
         x = x + 0.5 * self.feed_forward_in(x)
         norm_x = self.layer_norm_att(x)
 
+        mask = mask.to(x.device)
         x = x + self.self_attn(
             norm_x,
             norm_x,

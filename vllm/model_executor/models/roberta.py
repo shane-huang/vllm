@@ -155,8 +155,12 @@ class RobertaClassificationHead(nn.Module):
     def forward(self, features, **kwargs):
         x = features[0, :]  # take <s> token (equiv. to [CLS])
         x = self.dense(x)
+        if isinstance(x, tuple):
+            x = x[0]
         x = torch.tanh(x)
         x = self.out_proj(x)
+        if isinstance(x, tuple):
+            x = x[0]
         return x
 
 

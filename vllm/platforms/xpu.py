@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
+import vllm.envs as envs
 from vllm.logger import init_logger
 
 from .interface import DeviceCapability, Platform, PlatformEnum, _Backend
@@ -25,6 +26,9 @@ class XPUPlatform(Platform):
     # see https://github.com/ray-project/ray/blob/6a5eb5865eeb9ccf058a79b44f107e327e360673/python/ray/_private/accelerators/intel_gpu.py#L20 # noqa: E501
     ray_device_key: str = "GPU"
     device_control_env_var: str = "ONEAPI_DEVICE_SELECTOR"
+    additional_env_vars: list[str] = [
+        "IPEX_LLM_LOWBIT",
+    ]
 
     @classmethod
     def get_attn_backend_cls(cls, selected_backend: _Backend, head_size: int,
@@ -33,8 +37,13 @@ class XPUPlatform(Platform):
                              use_mla: bool) -> str:
         if selected_backend != _Backend.IPEX:
             logger.info("Cannot use %s backend on XPU.", selected_backend)
-        logger.info("Using IPEX attention backend.")
-        return "vllm.attention.backends.ipex_attn.IpexAttnBackend"
+        use_v1 = envs.VLLM_USE_V1
+        if use_v1:
+            logger.info("Using IPEX_V1 attention backend.")
+            return "vllm.v1.attention.backends.ipex_attn.IPEXAttentionBackend"
+        else:
+            logger.info("Using IPEX attention backend.")
+            return "vllm.attention.backends.ipex_attn.IpexAttnBackend"
 
     @staticmethod
     def get_device_capability(
@@ -63,6 +72,8 @@ class XPUPlatform(Platform):
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
         cache_config = vllm_config.cache_config
+        if cache_config and envs.VLLM_USE_V1:
+            cache_config.block_size = 64
         if cache_config and cache_config.block_size is None:
             cache_config.block_size = 16
 
@@ -87,31 +98,46 @@ class XPUPlatform(Platform):
             raise NotImplementedError(
                 "XPU does not support speculative decoding")
 
-        if vllm_config.device_config is not None:
-            assert vllm_config.device_config.device_type == "xpu"
+        # if vllm_config.device_config is not None:
+        #     assert vllm_config.device_config.device_type == "xpu"
 
         # check and update parallel config
         parallel_config = vllm_config.parallel_config
-        if parallel_config.worker_cls == "auto":
+
+        # TODO(xiangyu): check logic here
+
+        if envs.VLLM_USE_V1:
+            parallel_config.worker_cls = \
+                        "vllm.v1.worker.xpu_worker.XPUWorker"
+        else:
             parallel_config.worker_cls = "vllm.worker.xpu_worker.XPUWorker"
 
         if parallel_config.distributed_executor_backend is None:
-            parallel_config.distributed_executor_backend = "ray"
+            if parallel_config.world_size > 1:
+                parallel_config.distributed_executor_backend = "ray"
+            else:
+                parallel_config.distributed_executor_backend = "uni"
         elif parallel_config.distributed_executor_backend == "mp":
             # FIXME(kunshang):
             # spawn needs calling `if __name__ == '__main__':``
             # fork is not supported for xpu start new process.
-            logger.error(
-                "Both start methods (spawn and fork) have issue "
-                "on XPU if you use mp backend, setting it to ray instead.")
-            parallel_config.distributed_executor_backend = "ray"
-
-        elif parallel_config.distributed_executor_backend != "ray":
+            logger.warning(
+                "Please use spawn as start method if you want to use mp.")
+        elif parallel_config.distributed_executor_backend != "ray" and \
+                parallel_config.distributed_executor_backend != "uni":
             logger.warning(
                 "%s is not supported on XPU, fallback to ray distributed"
                 " executor backend.",
                 parallel_config.distributed_executor_backend)
             parallel_config.distributed_executor_backend = "ray"
+        # if (parallel_config.distributed_executor_backend is not None
+        #         and parallel_config.distributed_executor_backend != "ray"):
+        #     logger.warning(
+        #         "%s is not supported on XPU, fallback to ray distributed"
+        #         " executor backend.",
+        #         parallel_config.distributed_executor_backend)
+        #     parallel_config.distributed_executor_backend = "ray"
+        
 
     @classmethod
     def is_pin_memory_available(cls):
@@ -140,3 +166,7 @@ class XPUPlatform(Platform):
     @classmethod
     def get_device_communicator_cls(cls) -> str:
         return "vllm.distributed.device_communicators.xpu_communicator.XpuCommunicator"  # noqa
+
+    @classmethod
+    def use_all_gather(cls) -> bool:
+        return False
