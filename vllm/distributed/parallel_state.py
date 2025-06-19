@@ -37,7 +37,7 @@ import torch
 import torch.distributed
 from torch.distributed import Backend, ProcessGroup
 
-import vllm.distributed.kv_transfer.kv_transfer_agent as kv_transfer
+import vllm.distributed.kv_transfer.kv_connector_agent as kv_transfer
 import vllm.envs as envs
 from vllm.distributed.device_communicators.base_device_communicator import (
     DeviceCommunicatorBase)
