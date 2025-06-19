@@ -157,6 +157,8 @@ class MooncakeStoreConnector(KVConnectorBase):
             remote_kv = self.kv_store.get(load_kvcache_key)
             hidden_key = f"{load_key_prefix}_hidden_{self.local_tp_rank}"
             hidden = self.kv_store.get(hidden_key)
+            if hidden is not None:
+                hidden = hidden.to(input_tokens_tensor.device)
 
             if remote_kv is None or hidden is None:
                 # didn't find any match.
