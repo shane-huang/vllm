@@ -23,7 +23,7 @@ from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
 from vllm.worker.xpu_model_runner import XPUModelRunner, XPUModelRunnerBase
 from vllm.worker.xpu_pooling_model_runner import XPUPoolingModelRunner
 from vllm.worker.xpu_enc_dec_model_runner import XPUEncoderDecoderModelRunner
-from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
+from vllm.distributed import ensure_kv_transfer_initialized
 
 logger = init_logger(__name__)
 

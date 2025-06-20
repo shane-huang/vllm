@@ -14,7 +14,7 @@ import torch.nn as nn
 from vllm.attention import get_attn_backend
 from vllm.config import VllmConfig
 from vllm.distributed import get_pp_group
-from vllm.distributed.kv_transfer import get_kv_transfer_group
+from vllm.distributed import get_kv_transfer_group
 from vllm.forward_context import set_forward_context
 from vllm.inputs import INPUT_REGISTRY, InputRegistry
 from vllm.logger import init_logger
