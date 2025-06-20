@@ -958,8 +958,9 @@ class XPUModelRunner(XPUModelRunnerBase[ModelInputForXPUWithSamplingMetadata]):
             model_input: input to the model executable
             kv_caches: vLLM's paged memory
         """
-        if kv_caches is None:
+        if kv_caches is None or kv_caches[0] is None:
             return False
+
         if self.vllm_config.kv_transfer_config is None:
             return False
 
@@ -984,7 +985,7 @@ class XPUModelRunner(XPUModelRunnerBase[ModelInputForXPUWithSamplingMetadata]):
             model_input: input to the model executable
             kv_caches: vLLM's paged memory
         """
-        if kv_caches is None:
+        if kv_caches is None or kv_caches[0] is None:
             return False
         # import pudb.remote; pudb.remote.set_trace()
         if self.vllm_config.kv_transfer_config is None:
