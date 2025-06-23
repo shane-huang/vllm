@@ -59,7 +59,7 @@ class MooncakeStoreConnector(KVConnectorBase):
 
     def close(self) -> None:
         """Close the buffer and release resources.
-        This method is responsible for cleaning up resources related to the 
+        This method is responsible for cleaning up resources related to the
         connector when it is no longer needed.
         Raises:
             NotImplementedError: This method must be implemented in subclasses.
@@ -108,7 +108,8 @@ class MooncakeStoreConnector(KVConnectorBase):
             self.kv_store.put(hidden_key,
                               hidden_or_intermediate_states[start_pos:end_pos])
 
-        logger.debug("[rank%d]: KV send DONE.", torch.distributed.get_rank())
+        logger.info("[rank%d]: KV send DONE. store_put_key=%s, start_pos=%ld, end_pos=%ld",
+                    torch.distributed.get_rank(), hidden_key, start_pos, end_pos)
 
     def recv_kv_caches_and_hidden_states(
         self, model_executable: torch.nn.Module,
@@ -149,6 +150,11 @@ class MooncakeStoreConnector(KVConnectorBase):
             remote_kv = self.kv_store.get(load_kvcache_key)
             hidden_key = f"{load_key_prefix}_hidden_{self.local_tp_rank}"
             hidden = self.kv_store.get(hidden_key)
+
+            logger.info("get remote kv from store. start_pos=%d, end_pos=%d, remote_kv key=%s, hidden key=%s",
+                        start_pos, end_pos, load_kvcache_key,hidden_key)
+
+
             if hidden is not None:
                 hidden = hidden.to(input_tokens_tensor.device)
 
@@ -186,7 +192,7 @@ class MooncakeStoreConnector(KVConnectorBase):
             hidden_or_intermediate_states = None
 
         else:
-            logger.debug(
+            logger.info(
                 "[rank%d]: Successfully received all KVs and hidden "
                 "states, skip model forwarding.", torch.distributed.get_rank())
             hidden_or_intermediate_states = torch.cat(
