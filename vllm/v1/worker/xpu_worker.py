@@ -15,7 +15,7 @@ from vllm.platforms import current_platform
 from vllm.utils import supports_xccl
 from vllm.v1.worker.gpu_worker import Worker
 from vllm.v1.worker.xpu_model_runner import XPUModelRunner
-
+from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 logger = init_logger(__name__)
 
 
@@ -128,7 +128,7 @@ class XPUWorker(Worker):
         else:
             raise RuntimeError(
                 f"Not support device type: {self.device_config.device}")
-        init_worker_distributed_environment(self.parallel_config, self.rank,
+        init_worker_distributed_environment(self.vllm_config, self.rank,
                                             self.distributed_init_method,
                                             self.local_rank)
         # Set random seed.
@@ -138,13 +138,13 @@ class XPUWorker(Worker):
 
 
 def init_worker_distributed_environment(
-    parallel_config: ParallelConfig,
+    vllm_config: VllmConfig,
     rank: int,
     distributed_init_method: Optional[str] = None,
     local_rank: int = -1,
 ) -> None:
     """Initialize the distributed environment."""
-
+    parallel_config = vllm_config.parallel_config
     if torch.distributed.is_initialized():
         torch_world_size = torch.distributed.get_world_size()
         if torch_world_size != parallel_config.world_size:
@@ -174,5 +174,6 @@ def init_worker_distributed_environment(
 
     ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
                                       parallel_config.pipeline_parallel_size)
+    ensure_kv_transfer_initialized(vllm_config)
     # global all_reduce needed for overall oneccl warm up
     torch.distributed.all_reduce(torch.zeros(1).xpu())
